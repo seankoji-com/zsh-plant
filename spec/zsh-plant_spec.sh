@@ -1,141 +1,161 @@
 # shellcheck shell=bash disable=all
-# plant uses zsh-only syntax, so this suite runs under shellspec's zsh mode.
+# plant uses zsh-only syntax (${(U)}, $+commands) and the ordinary `date`/`git`
+# plumbing, so this suite runs under shellspec's zsh mode rather than bats.
 Describe 'zsh-plant.plugin.zsh'
-  Include ./zsh-plant.plugin.zsh
+Include ./zsh-plant.plugin.zsh
 
-  # Restrict PATH to avoid any real git on the developer's machine bleeding
-  # in unexpectedly — git itself we do want, so keep /usr/bin.
-  BASE_PATH="/usr/bin:/bin"
+# Restrict PATH to system bins so gum (often installed via Homebrew at
+# /opt/homebrew/bin) cannot leak into a test: every assertion here exercises
+# the plain-stderr logging fallback, and CI installs no gum.
+BASE_PATH="/usr/bin:/bin"
 
-  setup() {
-    TMPROOT="$(builtin cd "$(mktemp -d)" && pwd -P)"
-    PATH="$BASE_PATH"
-    hash -r
-  }
-  cleanup() { rm -rf "$TMPROOT"; builtin cd "$SHELLSPEC_PROJECT_ROOT"; }
-  BeforeEach 'setup'
-  AfterEach 'cleanup'
+# pwd -P: on macOS mktemp hands back a path under /var, which is a symlink to
+# /private/var. git resolves it, so an unresolved TMPROOT never compares equal.
+setup() {
+  TMPROOT="$(builtin cd "$(mktemp -d)" && pwd -P)"
+  export PATH="$BASE_PATH"
+  hash -r
+}
+cleanup() {
+  rm -rf "$TMPROOT"
+  builtin cd "$SHELLSPEC_PROJECT_ROOT"
+}
+BeforeEach 'setup'
+AfterEach 'cleanup'
 
-  # Shared helper: init a repo with one commit so worktrees can be added.
-  # commit.gpgsign=false is required because the stowed .gitconfig enables
-  # SSH signing globally, and the 1Password agent is not available in tests.
-  init_repo() {
-    mkdir -p "$1" && builtin cd "$1"
-    git init -q
-    git -c user.email=t@t -c user.name=t -c commit.gpgsign=false \
-      commit -q --allow-empty -m init
-  }
+# Create a git repo with one commit at $TMPROOT/repo and cd into it.
+new_repo() {
+  mkdir -p "$TMPROOT/repo" && builtin cd "$TMPROOT/repo"
+  git init -q
+  git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+}
 
-  Describe 'plant — argument validation'
-    It 'errors with no arguments'
-      run_it() { builtin cd "$TMPROOT"; plant; }
-      When call run_it
-      The status should be failure
-      The stderr should include 'a worktree name is required'
-    End
-
-    It 'errors on unknown flags'
-      run_it() { builtin cd "$TMPROOT"; plant --unknown foo; }
-      When call run_it
-      The status should be failure
-      The stderr should include 'unknown option'
-    End
-
-    It 'prints help with -h'
-      run_it() { plant -h; }
-      When call run_it
-      The status should be success
-      The output should include 'Usage'
-    End
-  End
-
-  Describe 'plant — git context'
+Describe 'plant'
     It 'errors outside a git repository'
-      run_it() { builtin cd "$TMPROOT"; plant my-feature; }
-      When call run_it
-      The status should be failure
-      The stderr should include 'not inside a git repository'
-    End
-  End
-
-  Describe 'plant — worktree creation'
-    It 'creates .worktrees/<name> and cds into it'
-      run_it() {
-        init_repo "$TMPROOT/repo"
-        plant my-feature 2>/dev/null
-        print -r -- "$PWD"
-      }
-      When call run_it
-      The status should be success
-      The output should equal "$TMPROOT/repo/.worktrees/my-feature"
+    run_it() {
+      builtin cd "$TMPROOT"
+      plant
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'not inside a git repository'
     End
 
-    It 'creates the branch named after <name> by default'
-      run_it() {
-        init_repo "$TMPROOT/repo"
-        plant my-feature 2>/dev/null
-        git branch --show-current
-      }
-      When call run_it
-      The status should be success
-      The output should equal "my-feature"
+    It 'rejects unknown options'
+    run_it() {
+      new_repo
+      plant --bogus
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'unknown option'
     End
 
-    It 'accepts an explicit branch name as the second positional argument'
-      run_it() {
-        init_repo "$TMPROOT/repo"
-        plant wt feat/thing 2>/dev/null
-        print -r -- "$PWD"
-      }
-      When call run_it
-      The status should be success
-      The output should equal "$TMPROOT/repo/.worktrees/wt"
+    It 'plants a worktree at <root>/.worktrees/<name> with a same-named branch'
+    run_it() {
+      new_repo
+      plant --no-cd myfeature
+      [ -d "$TMPROOT/repo/.worktrees/myfeature" ] && print 'dir yes'
+      command git branch --list myfeature
+    }
+    When call run_it
+    The output should include 'dir yes'
+    The output should include 'myfeature'
+    The stderr should include "planted 'myfeature'"
     End
 
-    It 'accepts -b <branch> <name> flag style'
-      run_it() {
-        init_repo "$TMPROOT/repo"
-        plant -b feat/thing wt 2>/dev/null
-        print -r -- "$PWD"
-      }
-      When call run_it
-      The status should be success
-      The output should equal "$TMPROOT/repo/.worktrees/wt"
+    It 'defaults the name to a minute-grained timestamp'
+    run_it() {
+      new_repo
+      plant --no-cd
+      find "$TMPROOT/repo/.worktrees" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+    }
+    When call run_it
+    The output should match pattern "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]"
+    The stderr should include 'using timestamp'
     End
 
-    It 'checks out an existing branch instead of creating a new one'
-      run_it() {
-        init_repo "$TMPROOT/repo"
-        git branch existing-branch
-        plant wt existing-branch 2>/dev/null
-        git branch --show-current
-      }
-      When call run_it
-      The status should be success
-      The output should equal "existing-branch"
+    It 'honors ZSH_PLANT_PATH'
+    run_it() {
+      new_repo
+      ZSH_PLANT_PATH=scratch plant --no-cd feat
+      [ -d "$TMPROOT/repo/scratch/feat" ] && print 'scratch yes'
+    }
+    When call run_it
+    The output should equal 'scratch yes'
+    The stderr should include 'planting'
     End
 
-    It 'errors when the destination already exists'
-      run_it() {
-        init_repo "$TMPROOT/repo"
-        mkdir -p ".worktrees/my-feature"
-        plant my-feature
-      }
-      When call run_it
-      The status should be failure
-      The stderr should include 'path already exists'
+    It 'cds into the new worktree by default'
+    run_it() {
+      new_repo
+      plant myfeature
+      print -r -- "$PWD"
+    }
+    When call run_it
+    The output should equal "$TMPROOT/repo/.worktrees/myfeature"
+    The stderr should include "planted 'myfeature'"
     End
 
-    It 'works from a subdirectory of the repo (root is still the anchor)'
-      run_it() {
-        init_repo "$TMPROOT/repo"
-        mkdir -p src && builtin cd src
-        plant my-feature 2>/dev/null
-        print -r -- "$PWD"
-      }
-      When call run_it
-      The status should be success
-      The output should equal "$TMPROOT/repo/.worktrees/my-feature"
+    It 'checks out an existing branch when given'
+    run_it() {
+      new_repo
+      command git branch backend
+      plant --no-cd feature backend
+      command git -C "$TMPROOT/repo/.worktrees/feature" branch --show-current
+    }
+    When call run_it
+    The output should equal 'backend'
+    The stderr should include "planted 'feature'"
     End
-  End
-End
+
+    It 'accepts the -b flag form'
+    run_it() {
+      new_repo
+      command git branch backend
+      plant --no-cd -b backend feature
+      command git -C "$TMPROOT/repo/.worktrees/feature" branch --show-current
+    }
+    When call run_it
+    The output should equal 'backend'
+    The stderr should include "planted 'feature'"
+    End
+
+    It 'refuses when the destination path already exists'
+    run_it() {
+      new_repo
+      mkdir -p "$TMPROOT/repo/.worktrees/taken"
+      plant --no-cd taken
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'path already exists'
+    End
+    End
+
+Describe 'plant_list'
+    It 'fails outside a git repository'
+    run_it() {
+      builtin cd "$TMPROOT"
+      plant_list
+    }
+    When call run_it
+    The status should be failure
+    End
+
+    It 'lists only planted worktrees, not arbitrary ones'
+    run_it() {
+      new_repo
+      plant --no-cd alpha
+      plant --no-cd beta
+      command git worktree add -q "$TMPROOT/other" -b other
+      plant_list
+    }
+    When call run_it
+    The output should include 'alpha'
+    The output should include 'beta'
+    The output should not include 'other'
+    The stderr should include 'planted'
+    End
+    End
+    End

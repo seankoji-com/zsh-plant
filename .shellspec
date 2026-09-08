@@ -1,2 +1,2 @@
---shell zsh
 --require spec_helper
+--shell /bin/zsh

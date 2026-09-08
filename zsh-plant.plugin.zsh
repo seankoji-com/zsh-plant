@@ -1,92 +1,139 @@
-# zsh-plant — create a git worktree at <root>/.worktrees/<name> and cd into it.
+# zsh-plant — plant a new git worktree at $ROOT/$ZSH_PLANT_PATH/<name>.
 #
-# Companion to zsh-worktree (which navigates between existing worktrees).
-# plant creates the worktree, optionally creating the branch, then lands you
-# in it.
+# Creates a worktree under a configurable subdirectory of the repo root
+# (default `.worktrees`) and cd's into it. The worktree branch defaults to
+# <name> — created from HEAD if it doesn't exist, or checked out as-is when
+# it does. Logging goes through `gum log` (Charm's level-styled structured
+# logger from the CLI) when gum is installed; otherwise it falls back to
+# plain stderr, so the plugin still works on machines without gum.
+#
+# plant_list is the inverse companion to zsh-worktree's `wtree`: wtree jumps
+# between all of a repo's worktrees, plant_list lists just the ones planted
+# here.
+#
+# Configure before loading:
+#   ZSH_PLANT_PATH   subdirectory under the repo root where worktrees grow
+#                    (default .worktrees)
 #
 # Usage:
-#   plant <name>            — new worktree at .worktrees/<name>, branch <name>
-#                            (branch created from HEAD if it doesn't exist)
-#   plant <name> <branch>   — same but tracks an existing branch by that name
-#   plant -b <branch> <name> — alias for the two-arg form (flag style)
-#
-# The worktree is always placed at <repo-root>/.worktrees/<name>.
+#   plant [--no-cd] <name> [<branch>]
+#   plant -b <branch> <name>     flag-style alias of the above
+#   plant [--no-cd]              name = minute-grained timestamp, branch = name
+
+: ${ZSH_PLANT_PATH=.worktrees}
+
+# Emit a log line: `gum log` when available, plain stderr otherwise.
+# $1: level (debug|info|warn|error); $2: message.
+_plant_log() {
+  local level="$1" msg="$2"
+  if (( $+commands[gum] )); then
+    command gum log --level "$level" --time="" "$msg"
+  else
+    print -u2 "[${(U)level}] $msg"
+  fi
+}
+
+# Print the names of this repo's planted worktrees, one per line. Returns
+# failure outside a git repository.
+plant_list() {
+  command git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  local root base
+  root=$(command git rev-parse --show-toplevel) || return 1
+  base="${ZSH_PLANT_PATH#/}"
+  command git worktree list --porcelain 2>/dev/null | awk -v pre="$root/$base/" '
+    /^worktree / {
+      p = substr($0, 10)
+      if (index(p, pre) == 1) print substr(p, length(pre) + 1)
+    }
+  '
+}
 
 plant() {
-  # ── option parsing ────────────────────────────────────────────────────────
-  local name branch existing=0
-  local -a git_args
-
+  local no_cd=0 name branch
+  local -a pos
+  pos=()
   while (( $# )); do
-    case $1 in
+    case "$1" in
+      --no-cd) no_cd=1 ;;
       -b|--branch)
         shift
+        if (( $# == 0 )); then
+          _plant_log error "plant: -b/--branch requires a branch name"
+          return 2
+        fi
         branch=$1
-        shift
         ;;
       -h|--help)
-        print "Usage: plant <name> [<branch>]"
-        print "       plant -b <branch> <name>"
-        print ""
-        print "Creates a git worktree at <repo-root>/.worktrees/<name> and cd's into it."
-        print "If <branch> is omitted the worktree branch defaults to <name>."
-        print "An existing branch is checked out as-is; a new one is created from HEAD."
+        print -r -- \
+          "plant: plant a git worktree at <root>/${ZSH_PLANT_PATH#/}/<name>" \
+          "Usage: plant [--no-cd] <name> [<branch>]" \
+          "       plant -b <branch> <name>" \
+          "  --no-cd   create the worktree without cd-ing into it" \
+          "  <name>    worktree name; defaults to a minute timestamp" \
+          "  <branch>  branch to check out; defaults to <name>. Created from" \
+          "            HEAD if missing, checked out as-is if it exists." \
+          "Set ZSH_PLANT_PATH (default .worktrees) before loading to move the base dir."
         return 0
         ;;
       --)
         shift
-        break
+        while (( $# )); do pos+=("$1"); shift; done
         ;;
       -*)
-        print -u2 "plant: unknown option: $1"
-        return 1
+        _plant_log error "plant: unknown option: $1"
+        return 2
         ;;
       *)
-        if [[ -z $name ]]; then
-          name=$1
-        elif [[ -z $branch ]]; then
-          branch=$1
-        else
-          print -u2 "plant: unexpected argument: $1"
-          return 1
-        fi
-        shift
+        pos+=("$1")
         ;;
     esac
+    shift
   done
 
-  if [[ -z $name ]]; then
-    print -u2 "plant: a worktree name is required"
-    print -u2 "Usage: plant <name> [<branch>]"
-    return 1
+  if (( ${#pos} > 0 )); then
+    name=$pos[1]
+    (( ${#pos} > 1 )) && branch=$pos[2]
+    if (( ${#pos} > 2 )); then
+      _plant_log error "plant: unexpected argument: $pos[3]"
+      return 2
+    fi
   fi
 
-  # Default branch to the name when not specified.
-  : ${branch:=$name}
-
-  # ── git context ──────────────────────────────────────────────────────────
-  local root
   root=$(command git rev-parse --show-toplevel 2>/dev/null) || {
-    print -u2 "plant: not inside a git repository"
+    _plant_log error "plant: not inside a git repository"
     return 1
   }
 
-  local dest="$root/.worktrees/$name"
+  if [[ -z "$name" ]]; then
+    name=$(command date +%Y%m%d-%H%M)
+    _plant_log debug "no name given; using timestamp '$name'"
+  fi
+  : ${branch:=$name}
 
-  if [[ -e $dest ]]; then
-    print -u2 "plant: path already exists: $dest"
+  target="$root/${ZSH_PLANT_PATH#/}/$name"
+  if [[ -e "$target" ]]; then
+    _plant_log error "plant: path already exists: $target"
     return 1
   fi
 
-  # ── create worktree ───────────────────────────────────────────────────────
-  # Redirect git's informational stdout ("HEAD is now at …") to stderr so it
-  # doesn't pollute subshell captures. The "Preparing worktree" line already
-  # goes to stderr on most git versions.
-  if command git rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
-    command git worktree add -- "$dest" "$branch" >&2
-  else
-    command git worktree add -b "$branch" -- "$dest" >&2
-  fi || return
+  _plant_log info "planting '$name' at $target"
 
-  builtin cd -- "$dest"
+  # Existing branch → check it out as-is; otherwise create a fresh one from
+  # HEAD. -q keeps git's "Preparing worktree" chatter out of the output.
+  if command git rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
+    command git worktree add -q -- "$target" "$branch"
+  else
+    command git worktree add -q -b "$branch" -- "$target"
+  fi || {
+    _plant_log error "plant: could not create worktree '$name'"
+    return 1
+  }
+
+  _plant_log info "planted '$name' in $target"
+  (( no_cd )) || {
+    builtin cd -- "$target" || {
+      _plant_log error "plant: could not cd into $target"
+      return 1
+    }
+  }
 }
