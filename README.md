@@ -1,5 +1,7 @@
 # zsh-plant
 
+<img width="961" height="119" alt="image" src="https://github.com/user-attachments/assets/bee9c6d9-293e-4474-8f9c-b7c2b7f9af50" />
+
 Plant a new git worktree at `<root>/<default-path>/<name>` and step into it.
 
 `plant` creates a worktree one level below the repo root — in a configurable
