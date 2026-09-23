@@ -159,3 +159,20 @@ Describe 'plant_list'
     End
     End
     End
+
+Describe 'plant validation before Git changes'
+  Include ./zsh-plant.plugin.zsh
+  Parameters
+    '-b' 'requires a branch name'
+    'one two three' 'unexpected argument'
+  End
+  It "rejects $1 before consulting Git"
+    run_it() {
+      _plant_log() { print -u2 -- "$2"; }
+      plant ${=1}
+    }
+    When call run_it "$1"
+    The status should equal 2
+    The stderr should include "$2"
+  End
+End
