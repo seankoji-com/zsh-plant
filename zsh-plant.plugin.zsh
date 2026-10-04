@@ -33,12 +33,24 @@ _plant_log() {
   fi
 }
 
+# Print the main checkout root of the current repository: the first entry of
+# `git worktree list --porcelain`, which is the same from the root and from any
+# worktree.
+_plant_root() {
+  command git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  local line
+  command git worktree list --porcelain 2>/dev/null | while IFS= read -r line; do
+    [[ "$line" == "worktree "* ]] || continue
+    print -r -- "${line#worktree }"
+    return 0
+  done
+}
+
 # Print the names of this repo's planted worktrees, one per line. Returns
 # failure outside a git repository.
 plant_list() {
-  command git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
   local root base
-  root=$(command git rev-parse --show-toplevel) || return 1
+  root=$(_plant_root) || return 1
   base="${ZSH_PLANT_PATH#/}"
   command git worktree list --porcelain 2>/dev/null | awk -v pre="$root/$base/" '
     /^worktree / {
@@ -49,7 +61,7 @@ plant_list() {
 }
 
 plant() {
-  local no_cd=0 name branch
+  local no_cd=0 name branch root target
   local -a pos
   pos=()
   while (( $# )); do
@@ -99,7 +111,7 @@ plant() {
     fi
   fi
 
-  root=$(command git rev-parse --show-toplevel 2>/dev/null) || {
+  root=$(_plant_root) || {
     _plant_log error "plant: not inside a git repository"
     return 1
   }
