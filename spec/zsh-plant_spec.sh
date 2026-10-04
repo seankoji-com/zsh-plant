@@ -131,6 +131,34 @@ Describe 'plant'
     The status should be failure
     The stderr should include 'path already exists'
     End
+
+    It 'does not leak root or target into the calling shell'
+    run_it() {
+      new_repo
+      root="untouched-root"
+      target="untouched-target"
+      plant --no-cd myfeature
+      print -r -- "$root:$target"
+    }
+    When call run_it
+    The output should equal 'untouched-root:untouched-target'
+    The stderr should include "planted 'myfeature'"
+    End
+
+    It 'plants from inside an existing worktree without nesting directories'
+    run_it() {
+      new_repo
+      plant --no-cd tree1
+      builtin cd "$TMPROOT/repo/.worktrees/tree1"
+      plant --no-cd tree2
+      [ -d "$TMPROOT/repo/.worktrees/tree2" ] && print 'tree2 at root'
+      [ ! -d "$TMPROOT/repo/.worktrees/tree1/.worktrees" ] && print 'no nesting'
+    }
+    When call run_it
+    The output should include 'tree2 at root'
+    The output should include 'no nesting'
+    The stderr should include "planted 'tree2'"
+    End
     End
 
 Describe 'plant_list'
