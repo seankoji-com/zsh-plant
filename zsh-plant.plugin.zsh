@@ -52,7 +52,9 @@ plant_list() {
   local root base
   root=$(_plant_root) || return 1
   base="${ZSH_PLANT_PATH#/}"
-  command git worktree list --porcelain 2>/dev/null | awk -v pre="$root/$base/" '
+  # Environment values preserve backslashes that awk -v would interpret.
+  command git worktree list --porcelain 2>/dev/null | ZSH_PLANT_LIST_PREFIX="$root/$base/" awk '
+    BEGIN { pre = ENVIRON["ZSH_PLANT_LIST_PREFIX"] }
     /^worktree / {
       p = substr($0, 10)
       if (index(p, pre) == 1) print substr(p, length(pre) + 1)

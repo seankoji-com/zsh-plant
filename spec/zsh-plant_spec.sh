@@ -185,6 +185,29 @@ Describe 'plant_list'
     The output should not include 'other'
     The stderr should include 'planted'
     End
+
+  Parameters
+    'repository'
+    'base'
+  End
+  It "lists planted worktrees with a literal backslash in the $1 path"
+    run_it() {
+      new_repo
+      if [[ "$1" == repository ]]; then
+        builtin cd -- "$TMPROOT"
+        mv repo 'repo\nname'
+        builtin cd -- 'repo\nname'
+      else
+        ZSH_PLANT_PATH='trees\nname'
+      fi
+      plant --no-cd feature || return
+      plant_list
+    }
+    When call run_it "$1"
+    The status should be success
+    The output should equal 'feature'
+    The stderr should include "planted 'feature'"
+  End
     End
     End
 
